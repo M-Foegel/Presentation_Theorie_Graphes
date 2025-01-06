@@ -1,0 +1,352 @@
+---
+title: "La théorie des graphes"
+subtitle : "Une application pratique"
+author: "Martial Foegel"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+# usage
+packages <- c("igraph", "data.table", "centiserve")
+ipak(packages)
+
+```
+
+## Exercice d'échauffement
+
+Avec le petit graphe présenté ci-dessous, écrivez le code nécessaire à afficher les trois mesures caractérisant un graphe (entre parenthèse sont les fonctions de igraph que vous pouvez utiliser) :
+
+```{r}
+##### creating the graph #####
+## number of node N
+N <- 6
+
+## the graph in adjacency format
+graph <- matrix(data = c(0,1,0,0,0,0,
+                         1,0,1,0,0,1,
+                         0,1,0,1,1,0,
+                         0,0,1,0,1,0,
+                         0,0,1,1,0,1,
+                         0,1,0,0,1,0),
+                nrow = N)
+
+colnames(graph) <- 1:N
+rownames(graph) <- 1:N
+
+## format the graph so that it way be usable for the package igraph
+graph <- as.undirected(graph_from_adjacency_matrix(graph))
+
+## here is your graph !
+plot(graph)
+```
+
+La distribution des degrés (*degree.distribution()*)
+
+```{r}
+## the degree of each node : number of node each node is connected to
+degree(graph)
+
+## the distribution of the degrees
+degree.distribution(graph)
+
+## let's put it in a barplot
+t1 <- degree.distribution(graph)
+names(t1) <- 0:(length(t1)-1)
+
+barplot(t1,
+        xlab = "k", ylab = "Relative frequencies", 
+        main = "Degree distribution of the graph",
+        col = "orange")
+```
+
+Moyenne du coefficient de clustering local (*transitivity()*)
+
+```{r}
+## local clustering coefficient
+transitivity(graph, type="localundirected", isolates = "zero")
+
+## global clustering coefficient as the average of clustering coefficient
+mean(transitivity(graph, type="localundirected", isolates = "zero"))
+```
+
+Distance moyenne minimum entre paires de sommets (*distances ou average.path.length()*)
+
+```{r}
+## all the shortest distances between pairs of nodes
+(d_ij <- distances(graph))
+
+## the average shortest path length
+average.path.length(graph)
+
+## if you want to calculate it yourself
+mean(d_ij[upper.tri(d_ij)])
+
+## or to follow closer to the formula
+2/(N*(N-1)) * sum(d_ij[upper.tri(d_ij)])
+```
+
+
+## Données pour les exercices suivant
+
+```{r}
+load("graph_pr_exos.Rdata")
+```
+
+Les données sont une partie des données d'un dataset présent sur Kaggle (https://www.kaggle.com/datasets/mathurinache/citation-network-dataset/data), qui regroupe 4,894,081 papiers et 45,564,149 citations. Pour cette exercice le dataset a été réduit en ne prenant que les papiers qui viennent journal scientifique, dont au moins l'un des auteurs appartient à une organisation faisant de la recherche en linguistique. Nous avons finalement ici 2815 articles pour 25497 citations. Un exemple de données et montré ci-dessous.
+
+```{r}
+head(citation_net_ds_ling)
+```
+
+## Réseau de co-auteurs
+
+A partir des données présentées auparavant, un graphe a été construit d'un réseau de co-auteurs, avec les auteurs comme noeuds/sommets et s'ils ont un papier en commun ils auront une arrête/lien entre eux.
+
+### Graphe non pondéré
+
+Nous allons commencer par le graphe de co-auteurs sans pondération (**g_co_auteur_UNW**). Si les auteurs ont écrit au moins un article en commun alors ils ont une arrête/lien entre eux, sinon ils n'en ont pas (respectivement 1 et 0 sur la matrice d'adjacence).
+
+Dans un premier temps, affichez les trois mesures caractérisant un graphe :
+
+```{r}
+t1 <- degree.distribution(g_co_auteur_UWN)
+names(t1) <- 0:(length(t1)-1)
+
+barplot(t1,
+        xlab = "k", ylab = "Relative frequencies", 
+        main = "Degree distribution of the graph",
+        col = "orange")
+
+## global clustering coefficient as the average of clustering coefficient
+mean(transitivity(g_co_auteur_UWN, type="localundirected", isolates = "zero"))
+
+## the average shortest path length
+average.path.length(g_co_auteur_UWN)
+```
+
+Pour la suite de l'exercice nous allons seulement nous intéresser au plus gros composant du graphe (le plus gros sub-graphe connecté qui ne fait pas parti d'un subgraph plus large). Nous sélectionnons se composant en utilisant le code ci dessous.
+
+```{r}
+components <- igraph::clusters(g_co_auteur_UWN, mode="weak")
+biggest_cluster_id <- which.max(components$csize)
+
+# ids
+vert_ids <- V(g_co_auteur_UWN)[components$membership == biggest_cluster_id]
+
+# subgraph
+sg_co_auteur_UWN <- igraph::induced_subgraph(g_co_auteur_UWN, vert_ids)
+
+# multiple and loops aren't important here so we get rid of them
+sg_co_auteur_UWN <- simplify(sg_co_auteur_UWN)
+```
+
+Si vous voulez un aperçu du composant en question, vous pouvez l'afficher avec le code ci dessous :
+
+```{r}
+par(mar=c(0,0,0,0)+.1)
+plot(sg_co_auteur_UWN, layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = 2)
+```
+
+
+Imaginons maintenant que vous voulez trouver la personne la plus importante dans le domaine de la linguistique. Pour se faire il faudra utiliser des mesures de centralité, pour identifier les sommets les plus significatifs (i.e. les chercheurs les plus importants). Plusieurs mesures de centralité existent et elles ne mesurent pas la même chose. Les mesures de centralité géométrique mettent en avant les sommets qui sont au "centre" du graphe alors que les mesures de centralité lié à la connectivité mettent en avant les sommets dont les voisins sont importants. Vous trouverez ci-dessous quelques une des plus importante mesures de connectivité, ainsi qu'une simple définition les accompagnant :
+  - centralité lié à la connectivité :
+    - degree centrality : nombre de connexion d'un sommet
+    - eigenvector centrality : à quel point un sommet bien connecté et connecté à d'autres sommets bien connecté
+    - Katz centrality : degré d'influence d'un sommet dans un graphe en utilisant un facteur d'atténuation en fonction de la distance du entre les sommets
+  - centralité géométrique :
+    - closeness centrality : inverse de la moyenne des chemins les plus courts à partir d'un sommet
+    - betweeness centrality : les sommets les plus important sont le long du plus des chemins entre sommets les plus courts
+    
+
+Pour chacune des mesures présentés ci-dessus, écrivez le code permettant d'identifier cette personne dans le graph **sg_co_auteur_UNW**. Quel mesure est la plus pertinente selon-vous ?
+
+```{r}
+which.max(degree(sg_co_auteur_UWN))
+
+which.max(eigen_centrality(sg_co_auteur_UWN)$vector)
+
+which.max(katzcent(sg_co_auteur_UWN, alpha = 0.02))
+
+which.max(closeness(sg_co_auteur_UWN))
+
+which.max(betweenness(sg_co_auteur_UWN))
+```
+
+Dans notre cas, une personne est sur-représenté (ou très prolifique).
+
+```{r}
+ts_id_auteur <- unlist(strsplit(citation_net_ds_ling$author_id, ";"))
+ts_nom_auteur <- unlist(strsplit(citation_net_ds_ling$author_name, ";"))
+
+ts_nom_auteur[which(ts_id_auteur == 2304733672)[1]]
+```
+
+Quelques représentation graphiques suffisent à montrer que toutes les mesures ne mettent pas en avant les mêmes sommets :
+
+```{r}
+par(mar=c(0,0,0,0)+.1)
+
+for_scale <- scale(degree(sg_co_auteur_UWN), center = F)
+plot(sg_co_auteur_UWN,  layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = for_scale)
+
+for_scale <- scale(eigen_centrality(sg_co_auteur_UWN)$vector, center = F)
+plot(sg_co_auteur_UWN,  layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = for_scale)
+
+for_scale <- scale(katzcent(sg_co_auteur_UWN, alpha = 0.02), center = F)
+plot(sg_co_auteur_UWN,  layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = for_scale)
+
+for_scale <- scale(closeness(sg_co_auteur_UWN), center = F)
+plot(sg_co_auteur_UWN,  layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = for_scale)
+
+for_scale <- scale(betweenness(sg_co_auteur_UWN), center = F)
+plot(sg_co_auteur_UWN,  layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = for_scale)
+```
+
+### Graphe pondéré
+
+Passons maintenant au réseau de co-auteur avec pondération (**g_co_auteur_WN**). La pondération correspond au nombre de fois ou deux auteurs on écrit un article ensemble.
+
+Encore une fois, nous nous intéressons ici seulement composant du graphe (le plus gros sub-graphe connecté qui ne fait pas parti d'un subgraph plus large). Nous sélectionnons se composant en utilisant le code ci dessous.
+
+```{r}
+components <- igraph::clusters(g_co_auteur_WN, mode="weak")
+biggest_cluster_id <- which.max(components$csize)
+
+# ids
+vert_ids <- V(g_co_auteur_WN)[components$membership == biggest_cluster_id]
+
+# subgraph
+sg_co_auteur_WN <- igraph::induced_subgraph(g_co_auteur_WN, vert_ids)
+
+# multiple and loops aren't important here so we get rid of them
+sg_co_auteur_WN <- simplify(sg_co_auteur_WN)
+```
+
+Si vous voulez un aperçu du composant en question (avec cette fois ci des arrêtes plus grosse en fonctions du poids attribués), vous pouvez l'afficher avec le code ci dessous :
+
+```{r}
+par(mar=c(0,0,0,0)+.1)
+plot(sg_co_auteur_WN, layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = 2,
+     edge.width = E(sg_co_auteur_WN)$weight)
+```
+
+Maintenant, essayons de trouver parmi le réseau de co-auteur, si nous pouvons les séparer en communautés. Il existe plusieurs façons de détecter les communautés, elles commencent toutes par *cluster_* dans igraph, donc choisissez celle que vous voulez et faites-la tourner sur le graphe **sg_co_auteur_NW**. Vous pouvez ensuite calculer à quel point elle a bien séparé les clusters en utilisant la fonction *modularity()* en concert avec la fonction *membership()*.
+
+```{r}
+cfg <- cluster_fast_greedy(sg_co_auteur_WN)
+modularity(sg_co_auteur_WN, membership(cfg))
+
+csg <- cluster_spinglass(sg_co_auteur_WN)
+modularity(sg_co_auteur_WN, membership(csg))
+```
+
+Quelques représentation graphiques montrent comment les clusters ont été séparé :
+
+```{r}
+par(mar=c(0,0,0,0)+.1)
+plot(sg_co_auteur_WN, layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = 2,
+     edge.width = E(sg_co_auteur_WN)$weight,
+     vertex.color = membership(cfg))
+
+par(mar=c(0,0,0,0)+.1)
+plot(sg_co_auteur_WN, layout = layout_with_kk, 
+     vertex.label = NA,
+     vertex.size = 2,
+     edge.width = E(sg_co_auteur_WN)$weight,
+     vertex.color = membership(csg))
+```
+
+## Réseau de citations
+
+A partir des données présentées auparavant, un graphe a été construit à partir des citation des papiers scientifique (*g_citation_UWN*), avec les articles comme noeuds/sommets et pour chaque papier qu'ils citent, un lien a été créé de en direction du papier cité. Ici, le plus gros composant a déjà été selectionné en avance pour gagner du temps.
+
+### Graphe orienté
+
+Les mesures caractérisant un graphe orienté ne sont pas les mêmes que pour un graphe classique. Les degrés pouvant être entrant (arrivant au sommet) ou sortant (partant du sommet), les deux mesures sont importantes. Essayez de les afficher :
+
+```{r}
+t_in <- degree.distribution(g_citation_UWN,
+                          mode = "in")
+names(t_in) <- 0:(length(t_in)-1)
+
+barplot(t_in,
+        xlab = "k", ylab = "Relative frequencies", 
+        main = "In-Degree distribution of the graph",
+        col = "orange")
+
+t_out <- degree.distribution(g_citation_UWN,
+                          mode = "out")
+names(t_out) <- 0:(length(t_out)-1)
+
+#comme plus de 90% des degree sortant ne sont cité nulle part, nous ne les affichons pas dans le barplot
+
+barplot(t_out[-1],
+        xlab = "k", ylab = "Relative frequencies", 
+        main = "Out-Degree distribution of the graph except nodes with 0 out-degree",
+        col = "orange",
+        border = "orange")
+```
+
+Avec les degrés sortant, nous pouvons facilement voir que quelques articles sont particulièrement cités. Les voici :
+
+```{r}
+sort(degree(g_citation_UWN,mode = "out"), decreasing = T)[1:20]
+```
+L'article le plus cité a 397 citations dans notre jeu de données ! Le voici :
+
+```{r}
+citation_net_ds_ling[id == "2604799547"]
+```
+
+
+Par ailleurs le coefficient de clustering n'a pas vraiment de raison d'être ici. Nous pouvons par contre toujours calculer la distance moyenne minimum entre paires de sommets, seulement cette fois ci les chemins empruntés ont une direction associé. Affichez cette mesure pour ce graphe :
+
+```{r}
+## the average shortest path length
+average.path.length(g_citation_UWN)
+```
+
+Comme avant nous pouvons nous intéresser à des mesures comme la betweeness centrality (les sommets les plus important sont le long du plus des chemins entre sommets les plus courts) pour détecter quels sont les papiers les plus influents.
+
+```{r}
+which.max(betweenness(g_citation_UWN))
+```
+
+Nous pouvons afficher le graphe avec le code qui suit (attention, il est particulièrement imposant...):
+
+```{r}
+par(mar=c(0,0,0,0)+.1)
+plot(g_citation_UWN, 
+     vertex.label = NA,
+     vertex.size = 2,
+     edge.width = 0.001,
+     edge.arrow.size = 0.001,
+     edge.color=adjustcolor(1, alpha.f = 0.15))
+```
+
